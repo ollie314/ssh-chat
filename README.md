@@ -14,9 +14,18 @@ Join the party:
 $ ssh chat.shazow.net
 ```
 
-The server's RSA key fingerprint is `e5:d5:d1:75:90:38:42:f6:c7:03:d7:d0:56:7d:6a:db`. If you see something different, you might be [MITM](https://en.wikipedia.org/wiki/Man-in-the-middle_attack)'d.
+The server's RSA key fingerprint is `MD5:e5:d5:d1:75:90:38:42:f6:c7:03:d7:d0:56:7d:6a:db` or `SHA256:HQDLlZsXL3t0lV5CHM0OXeZ5O6PcfHuzkS8cRbbTLBI`. If you see something different, you might be [MITM](https://en.wikipedia.org/wiki/Man-in-the-middle_attack)'d.
 
 (Apologies if the server is down, try again shortly.)
+
+
+## Downloading a release
+
+Recent releases include builds for MacOS (darwin/amd64) and Linux (386,
+amd64, and ARM6 for your RaspberryPi).
+
+**[Grab the latest release here](https://github.com/shazow/ssh-chat/releases/)**.
+
 
 ## Compiling / Developing
 
@@ -30,6 +39,7 @@ Additionally, `make debug` runs the server with an http `pprof` server. This all
 [http://localhost:6060/debug/pprof/]() and view profiling data. See
 [net/http/pprof](http://golang.org/pkg/net/http/pprof/) for more information about `pprof`.
 
+
 ## Quick Start
 
 ```
@@ -38,18 +48,20 @@ Usage:
 
 Application Options:
   -v, --verbose    Show verbose logging.
+      --version    Print version and exit.
   -i, --identity=  Private key to identify server with. (~/.ssh/id_rsa)
       --bind=      Host and port to listen on. (0.0.0.0:2022)
       --admin=     Fingerprint of pubkey to mark as admin.
       --whitelist= Optional file of pubkey fingerprints that are allowed to connect
       --motd=      Message of the Day file (optional)
+      --log=       Write chat log to this file.
       --pprof=     enable http server for pprof
 
 Help Options:
   -h, --help       Show this help message
 ```
 
-After doing `go get github.com/shazow/ssh-chat` on this repo, you should be able
+After doing `go get github.com/shazow/ssh-chat/...` on this repo, you should be able
 to run a command like:
 
 ```
@@ -59,18 +71,10 @@ $ ssh-chat --verbose --bind ":22" --identity ~/.ssh/id_dsa
 To bind on port 22, you'll need to make sure it's free (move any other ssh
 daemons to another port) and run ssh-chat as root (or with sudo).
 
-## Deploying with Docker
+## Frequently Asked Questions
 
-You can run ssh-chat using a Docker image without manually installing go-lang:
-
-**Note: alvin/ssh-chat has v0 which is not the latest master branch as of this writing (Jan 23, 2015)**
-
-```
-$ docker pull alvin/ssh-chat
-$ docker run -d -p 0.0.0.0:(your host machine port):2022 --name ssh-chat alvin/ssh-chat
-```
-
-See notes in the header of our Dockerfile for details on building your own image.
+The FAQs can be found on the project's [Wiki page](https://github.com/shazow/ssh-chat/wiki/FAQ).
+Feel free to submit more questions to be answered and added to the page.
 
 ## License
 

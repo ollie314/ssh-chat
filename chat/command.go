@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/shazow/ssh-chat/chat/message"
+	"github.com/shazow/ssh-chat/set"
 )
 
 // The error returned when an invalid command is issued.
@@ -62,7 +63,7 @@ func (c Commands) Alias(command string, alias string) error {
 
 // Run executes a command message.
 func (c Commands) Run(room *Room, msg message.CommandMsg) error {
-	if msg.From == nil {
+	if msg.From() == nil {
 		return ErrNoOwner
 	}
 
@@ -147,16 +148,16 @@ func InitCommands(c *Commands) {
 			}
 			u := msg.From()
 
-			member, ok := room.MemberById(u.Id())
+			member, ok := room.MemberByID(u.ID())
 			if !ok {
 				return errors.New("failed to find member")
 			}
 
-			oldId := member.Id()
-			member.SetId(SanitizeName(args[0]))
-			err := room.Rename(oldId, member)
+			oldID := member.ID()
+			member.SetID(SanitizeName(args[0]))
+			err := room.Rename(oldID, member)
 			if err != nil {
-				member.SetId(oldId)
+				member.SetID(oldID)
 				return err
 			}
 			return nil
@@ -178,15 +179,16 @@ func InitCommands(c *Commands) {
 
 	c.Add(Command{
 		Prefix:     "/theme",
-		PrefixHelp: "[mono|colors]",
-		Help:       "Set your color theme.",
+		PrefixHelp: "[colors|...]",
+		Help:       "Set your color theme. (More themes: solarized, mono, hacker)",
 		Handler: func(room *Room, msg message.CommandMsg) error {
 			user := msg.From()
 			args := msg.Args()
+			cfg := user.Config()
 			if len(args) == 0 {
 				theme := "plain"
-				if user.Config.Theme != nil {
-					theme = user.Config.Theme.Id()
+				if cfg.Theme != nil {
+					theme = cfg.Theme.ID()
 				}
 				body := fmt.Sprintf("Current theme: %s", theme)
 				room.Send(message.NewSystemMsg(body, user))
@@ -195,8 +197,9 @@ func InitCommands(c *Commands) {
 
 			id := args[0]
 			for _, t := range message.Themes {
-				if t.Id() == id {
-					user.Config.Theme = &t
+				if t.ID() == id {
+					cfg.Theme = &t
+					user.SetConfig(cfg)
 					body := fmt.Sprintf("Set theme: %s", id)
 					room.Send(message.NewSystemMsg(body, user))
 					return nil
@@ -211,10 +214,12 @@ func InitCommands(c *Commands) {
 		Help:   "Silence room announcements.",
 		Handler: func(room *Room, msg message.CommandMsg) error {
 			u := msg.From()
-			u.ToggleQuietMode()
+			cfg := u.Config()
+			cfg.Quiet = !cfg.Quiet
+			u.SetConfig(cfg)
 
 			var body string
-			if u.Config.Quiet {
+			if cfg.Quiet {
 				body = "Quiet mode is toggled ON"
 			} else {
 				body = "Quiet mode is toggled OFF"
@@ -237,6 +242,69 @@ func InitCommands(c *Commands) {
 			}
 
 			room.Send(message.NewEmoteMsg(me, msg.From()))
+			return nil
+		},
+	})
+
+	c.Add(Command{
+		Prefix:     "/ignore",
+		PrefixHelp: "[USER]",
+		Help:       "Hide messages from USER, /unignore USER to stop hiding.",
+		Handler: func(room *Room, msg message.CommandMsg) error {
+			id := strings.TrimSpace(strings.TrimLeft(msg.Body(), "/ignore"))
+			if id == "" {
+				// Print ignored names, if any.
+				var names []string
+				msg.From().Ignored.Each(func(_ string, item set.Item) error {
+					names = append(names, item.Key())
+					return nil
+				})
+
+				var systemMsg string
+				if len(names) == 0 {
+					systemMsg = "0 users ignored."
+				} else {
+					systemMsg = fmt.Sprintf("%d ignored: %s", len(names), strings.Join(names, ", "))
+				}
+
+				room.Send(message.NewSystemMsg(systemMsg, msg.From()))
+				return nil
+			}
+
+			if id == msg.From().ID() {
+				return errors.New("cannot ignore self")
+			}
+			target, ok := room.MemberByID(id)
+			if !ok {
+				return fmt.Errorf("user not found: %s", id)
+			}
+
+			err := msg.From().Ignored.Add(set.Itemize(id, target))
+			if err == set.ErrCollision {
+				return fmt.Errorf("user already ignored: %s", id)
+			} else if err != nil {
+				return err
+			}
+
+			room.Send(message.NewSystemMsg(fmt.Sprintf("Ignoring: %s", target.Name()), msg.From()))
+			return nil
+		},
+	})
+
+	c.Add(Command{
+		Prefix:     "/unignore",
+		PrefixHelp: "USER",
+		Handler: func(room *Room, msg message.CommandMsg) error {
+			id := strings.TrimSpace(strings.TrimLeft(msg.Body(), "/unignore"))
+			if id == "" {
+				return errors.New("must specify user")
+			}
+
+			if err := msg.From().Ignored.Remove(id); err != nil {
+				return err
+			}
+
+			room.Send(message.NewSystemMsg(fmt.Sprintf("No longer ignoring: %s", id), msg.From()))
 			return nil
 		},
 	})

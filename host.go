@@ -5,23 +5,25 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/dustin/go-humanize"
 	"github.com/shazow/rateio"
 	"github.com/shazow/ssh-chat/chat"
 	"github.com/shazow/ssh-chat/chat/message"
+	"github.com/shazow/ssh-chat/set"
 	"github.com/shazow/ssh-chat/sshd"
 )
-
-var buildCommit string
 
 const maxInputLength int = 1024
 
 // GetPrompt will render the terminal prompt string based on the user.
 func GetPrompt(user *message.User) string {
 	name := user.Name()
-	if user.Config.Theme != nil {
-		name = user.Config.Theme.ColorName(user)
+	cfg := user.Config()
+	if cfg.Theme != nil {
+		name = cfg.Theme.ColorName(user)
 	}
 	return fmt.Sprintf("[%s] ", name)
 }
@@ -32,13 +34,17 @@ type Host struct {
 	*chat.Room
 	listener *sshd.SSHListener
 	commands chat.Commands
+	auth     *Auth
 
-	motd  string
-	auth  *Auth
-	count int
+	// Version string to print on /version
+	Version string
 
 	// Default theme
 	theme message.Theme
+
+	mu    sync.Mutex
+	motd  string
+	count int
 }
 
 // NewHost creates a Host on top of an existing listener.
@@ -62,15 +68,19 @@ func NewHost(listener *sshd.SSHListener, auth *Auth) *Host {
 
 // SetTheme sets the default theme for the host.
 func (h *Host) SetTheme(theme message.Theme) {
+	h.mu.Lock()
 	h.theme = theme
+	h.mu.Unlock()
 }
 
 // SetMotd sets the host's message of the day.
 func (h *Host) SetMotd(motd string) {
+	h.mu.Lock()
 	h.motd = motd
+	h.mu.Unlock()
 }
 
-func (h Host) isOp(conn sshd.Connection) bool {
+func (h *Host) isOp(conn sshd.Connection) bool {
 	key := conn.PublicKey()
 	if key == nil {
 		return false
@@ -82,27 +92,34 @@ func (h Host) isOp(conn sshd.Connection) bool {
 func (h *Host) Connect(term *sshd.Terminal) {
 	id := NewIdentity(term.Conn)
 	user := message.NewUserScreen(id, term)
-	user.Config.Theme = &h.theme
-	go func() {
-		// Close term once user is closed.
-		user.Wait()
-		term.Close()
-	}()
+	cfg := user.Config()
+	cfg.Theme = &h.theme
+	user.SetConfig(cfg)
+	go user.Consume()
+
+	// Close term once user is closed.
 	defer user.Close()
+	defer term.Close()
+
+	h.mu.Lock()
+	motd := h.motd
+	count := h.count
+	h.count++
+	h.mu.Unlock()
 
 	// Send MOTD
-	if h.motd != "" {
-		user.Send(message.NewAnnounceMsg(h.motd))
+	if motd != "" {
+		user.Send(message.NewAnnounceMsg(motd))
 	}
 
 	member, err := h.Join(user)
 	if err != nil {
 		// Try again...
-		id.SetName(fmt.Sprintf("Guest%d", h.count))
+		id.SetName(fmt.Sprintf("Guest%d", count))
 		member, err = h.Join(user)
 	}
 	if err != nil {
-		logger.Errorf("Failed to join: %s", err)
+		logger.Errorf("[%s] Failed to join: %s", term.Conn.RemoteAddr(), err)
 		return
 	}
 
@@ -110,11 +127,14 @@ func (h *Host) Connect(term *sshd.Terminal) {
 	term.SetPrompt(GetPrompt(user))
 	term.AutoCompleteCallback = h.AutoCompleteFunction(user)
 	user.SetHighlight(user.Name())
-	h.count++
 
 	// Should the user be op'd on join?
-	member.Op = h.isOp(term.Conn)
+	if h.isOp(term.Conn) {
+		h.Room.Ops.Add(set.Itemize(member.ID(), member))
+	}
 	ratelimit := rateio.NewSimpleLimiter(3, time.Second*3)
+
+	logger.Debugf("[%s] Joined: %s", term.Conn.RemoteAddr(), user.Name())
 
 	for {
 		line, err := term.ReadLine()
@@ -122,7 +142,7 @@ func (h *Host) Connect(term *sshd.Terminal) {
 			// Closed
 			break
 		} else if err != nil {
-			logger.Errorf("Terminal reading error: %s", err)
+			logger.Errorf("[%s] Terminal reading error: %s", term.Conn.RemoteAddr(), err)
 			break
 		}
 
@@ -159,21 +179,19 @@ func (h *Host) Connect(term *sshd.Terminal) {
 
 	err = h.Leave(user)
 	if err != nil {
-		logger.Errorf("Failed to leave: %s", err)
+		logger.Errorf("[%s] Failed to leave: %s", term.Conn.RemoteAddr(), err)
 		return
 	}
+	logger.Debugf("[%s] Leaving: %s", term.Conn.RemoteAddr(), user.Name())
 }
 
 // Serve our chat room onto the listener
 func (h *Host) Serve() {
-	terminals := h.listener.ServeTerminal()
-
-	for term := range terminals {
-		go h.Connect(term)
-	}
+	h.listener.HandlerFunc = h.Connect
+	h.listener.Serve()
 }
 
-func (h Host) completeName(partial string) string {
+func (h *Host) completeName(partial string) string {
 	names := h.NamesPrefix(partial)
 	if len(names) == 0 {
 		// Didn't find anything
@@ -183,8 +201,8 @@ func (h Host) completeName(partial string) string {
 	return names[len(names)-1]
 }
 
-func (h Host) completeCommand(partial string) string {
-	for cmd, _ := range h.commands {
+func (h *Host) completeCommand(partial string) string {
+	for cmd := range h.commands {
 		if strings.HasPrefix(cmd, partial) {
 			return cmd
 		}
@@ -206,7 +224,10 @@ func (h *Host) AutoCompleteFunction(u *message.User) func(line string, pos int, 
 
 		fields := strings.Fields(line[:pos])
 		isFirst := len(fields) < 2
-		partial := fields[len(fields)-1]
+		partial := ""
+		if len(fields) > 0 {
+			partial = fields[len(fields)-1]
+		}
 		posPartial := pos - len(partial)
 
 		var completed string
@@ -242,7 +263,7 @@ func (h *Host) AutoCompleteFunction(u *message.User) func(line string, pos int, 
 
 // GetUser returns a message.User based on a name.
 func (h *Host) GetUser(name string) (*message.User, bool) {
-	m, ok := h.MemberById(name)
+	m, ok := h.MemberByID(name)
 	if !ok {
 		return nil, false
 	}
@@ -271,7 +292,12 @@ func (h *Host) InitCommands(c *chat.Commands) {
 			}
 
 			m := message.NewPrivateMsg(strings.Join(args[1:], " "), msg.From(), target)
-			room.Send(m)
+			room.Send(&m)
+
+			txt := fmt.Sprintf("[Sent PM to %s]", target.Name())
+			ms := message.NewSystemMsg(txt, msg.From())
+			room.Send(ms)
+			target.SetReplyTo(msg.From())
 			return nil
 		},
 	})
@@ -293,7 +319,11 @@ func (h *Host) InitCommands(c *chat.Commands) {
 			}
 
 			m := message.NewPrivateMsg(strings.Join(args, " "), msg.From(), target)
-			room.Send(m)
+			room.Send(&m)
+
+			txt := fmt.Sprintf("[Sent PM to %s]", target.Name())
+			ms := message.NewSystemMsg(txt, msg.From())
+			room.Send(ms)
 			return nil
 		},
 	})
@@ -314,7 +344,14 @@ func (h *Host) InitCommands(c *chat.Commands) {
 			}
 
 			id := target.Identifier.(*Identity)
-			room.Send(message.NewSystemMsg(id.Whois(), msg.From()))
+			var whois string
+			switch room.IsOp(msg.From()) {
+			case true:
+				whois = id.WhoisAdmin()
+			case false:
+				whois = id.Whois()
+			}
+			room.Send(message.NewSystemMsg(whois, msg.From()))
 
 			return nil
 		},
@@ -324,7 +361,7 @@ func (h *Host) InitCommands(c *chat.Commands) {
 	c.Add(chat.Command{
 		Prefix: "/version",
 		Handler: func(room *chat.Room, msg message.CommandMsg) error {
-			room.Send(message.NewSystemMsg(buildCommit, msg.From()))
+			room.Send(message.NewSystemMsg(h.Version, msg.From()))
 			return nil
 		},
 	})
@@ -333,7 +370,7 @@ func (h *Host) InitCommands(c *chat.Commands) {
 	c.Add(chat.Command{
 		Prefix: "/uptime",
 		Handler: func(room *chat.Room, msg message.CommandMsg) error {
-			room.Send(message.NewSystemMsg(time.Now().Sub(timeStarted).String(), msg.From()))
+			room.Send(message.NewSystemMsg(humanize.Time(timeStarted), msg.From()))
 			return nil
 		},
 	})
@@ -409,25 +446,28 @@ func (h *Host) InitCommands(c *chat.Commands) {
 	c.Add(chat.Command{
 		Op:         true,
 		Prefix:     "/motd",
-		PrefixHelp: "MESSAGE",
-		Help:       "Set the MESSAGE of the day.",
+		PrefixHelp: "[MESSAGE]",
+		Help:       "Set a new MESSAGE of the day, print the current motd without parameters.",
 		Handler: func(room *chat.Room, msg message.CommandMsg) error {
-			if !room.IsOp(msg.From()) {
-				return errors.New("must be op")
-			}
-
-			motd := ""
 			args := msg.Args()
-			if len(args) > 0 {
-				motd = strings.Join(args, " ")
+			user := msg.From()
+
+			h.mu.Lock()
+			motd := h.motd
+			h.mu.Unlock()
+
+			if len(args) == 0 {
+				room.Send(message.NewSystemMsg(motd, user))
+				return nil
+			}
+			if !room.IsOp(user) {
+				return errors.New("must be OP to modify the MOTD")
 			}
 
-			h.motd = motd
-			body := fmt.Sprintf("New message of the day set by %s:", msg.From().Name())
-			room.Send(message.NewAnnounceMsg(body))
-			if motd != "" {
-				room.Send(message.NewAnnounceMsg(motd))
-			}
+			motd = strings.Join(args, " ")
+			h.SetMotd(motd)
+			fromMsg := fmt.Sprintf("New message of the day set by %s:", msg.From().Name())
+			room.Send(message.NewAnnounceMsg(fromMsg + message.Newline + "-> " + motd))
 
 			return nil
 		},
@@ -453,11 +493,12 @@ func (h *Host) InitCommands(c *chat.Commands) {
 				until, _ = time.ParseDuration(args[1])
 			}
 
-			member, ok := room.MemberById(args[0])
+			member, ok := room.MemberByID(args[0])
 			if !ok {
 				return errors.New("user not found")
 			}
-			member.Op = true
+			room.Ops.Add(set.Itemize(member.ID(), member))
+
 			id := member.Identifier.(*Identity)
 			h.auth.Op(id.PublicKey(), until)
 

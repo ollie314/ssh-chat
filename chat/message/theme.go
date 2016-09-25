@@ -62,6 +62,18 @@ func (c Color256) Format(s string) string {
 	return "\033[" + c.String() + "m" + s + Reset
 }
 
+func Color256Palette(colors ...uint8) *Palette {
+	size := len(colors)
+	p := make([]Style, 0, size)
+	for _, color := range colors {
+		p = append(p, Color256(color))
+	}
+	return &Palette{
+		colors: p,
+		size:   size,
+	}
+}
+
 // No color, used for mono theme
 type Color0 struct{}
 
@@ -83,6 +95,9 @@ type Palette struct {
 
 // Get a color by index, overflows are looped around.
 func (p Palette) Get(i int) Style {
+	if p.size == 1 {
+		return p.colors[0]
+	}
 	return p.colors[i%(p.size-1)]
 }
 
@@ -107,7 +122,7 @@ type Theme struct {
 	names     *Palette
 }
 
-func (t Theme) Id() string {
+func (t Theme) ID() string {
 	return t.id
 }
 
@@ -152,44 +167,87 @@ var Themes []Theme
 // Default theme to use
 var DefaultTheme *Theme
 
-func readableColors256() *Palette {
-	size := 247
-	p := Palette{
-		colors: make([]Style, size),
-		size:   size,
+func allColors256() *Palette {
+	colors := []uint8{}
+	var i uint8
+	for i = 0; i < 255; i++ {
+		colors = append(colors, i)
 	}
-	j := 0
-	for i := 0; i < 256; i++ {
-		if (16 <= i && i <= 18) || (232 <= i && i <= 237) {
-			// Remove the ones near black, this is kinda sadpanda.
+	return Color256Palette(colors...)
+}
+
+func readableColors256() *Palette {
+	colors := []uint8{}
+	var i uint8
+	for i = 0; i < 255; i++ {
+		if i == 0 || i == 7 || i == 8 || i == 15 || i == 16 || i == 17 || i > 230 {
+			// Skip 31 Shades of Grey, and one hyperintelligent shade of blue.
 			continue
 		}
-		p.colors[j] = Color256(i)
-		j++
+		colors = append(colors, i)
 	}
-	return &p
+	return Color256Palette(colors...)
 }
 
 func init() {
-	palette := readableColors256()
-
 	Themes = []Theme{
-		Theme{
+		{
 			id:        "colors",
-			names:     palette,
-			sys:       palette.Get(8),                             // Grey
-			pm:        palette.Get(7),                             // White
+			names:     readableColors256(),
+			sys:       Color256(245),                              // Grey
+			pm:        Color256(7),                                // White
 			highlight: style(Bold + "\033[48;5;11m\033[38;5;16m"), // Yellow highlight
 		},
-		Theme{
+		{
+			id:        "solarized",
+			names:     Color256Palette(1, 2, 3, 4, 5, 6, 7, 9, 13),
+			sys:       Color256(11),                              // Yellow
+			pm:        Color256(15),                              // White
+			highlight: style(Bold + "\033[48;5;3m\033[38;5;94m"), // Orange highlight
+		},
+		{
+			id:        "hacker",
+			names:     Color256Palette(82),                        // Green
+			sys:       Color256(22),                               // Another green
+			pm:        Color256(28),                               // More green, slightly lighter
+			highlight: style(Bold + "\033[48;5;22m\033[38;5;46m"), // Green on dark green
+		},
+		{
 			id: "mono",
 		},
 	}
 
-	// Debug for printing colors:
-	//for _, color := range palette.colors {
-	//	fmt.Print(color.Format(color.String() + " "))
-	//}
-
 	DefaultTheme = &Themes[0]
+
+	/* Some debug helpers for your convenience:
+
+	// Debug for palettes
+	printPalette(allColors256())
+
+	// Debug for themes
+	for _, t := range Themes {
+		printTheme(t)
+	}
+
+	*/
+}
+
+func printTheme(t Theme) {
+	fmt.Println("Printing theme:", t.ID())
+	if t.names != nil {
+		for i, color := range t.names.colors {
+			fmt.Printf("%s ", color.Format(fmt.Sprintf("name%d", i)))
+		}
+		fmt.Println("")
+	}
+	fmt.Println(t.ColorSys("SystemMsg"))
+	fmt.Println(t.ColorPM("PrivateMsg"))
+	fmt.Println(t.Highlight("Highlight"))
+	fmt.Println("")
+}
+
+func printPalette(p *Palette) {
+	for i, color := range p.colors {
+		fmt.Printf("%d\t%s\n", i, color.Format(color.String()+" "))
+	}
 }

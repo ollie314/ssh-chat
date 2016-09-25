@@ -48,21 +48,21 @@ func NewMsg(body string) *Msg {
 }
 
 // Render message based on a theme.
-func (m *Msg) Render(t *Theme) string {
+func (m Msg) Render(t *Theme) string {
 	// TODO: Render based on theme
 	// TODO: Cache based on theme
 	return m.String()
 }
 
-func (m *Msg) String() string {
+func (m Msg) String() string {
 	return m.body
 }
 
-func (m *Msg) Command() string {
+func (m Msg) Command() string {
 	return ""
 }
 
-func (m *Msg) Timestamp() time.Time {
+func (m Msg) Timestamp() time.Time {
 	return m.timestamp
 }
 
@@ -72,8 +72,8 @@ type PublicMsg struct {
 	from *User
 }
 
-func NewPublicMsg(body string, from *User) *PublicMsg {
-	return &PublicMsg{
+func NewPublicMsg(body string, from *User) PublicMsg {
+	return PublicMsg{
 		Msg: Msg{
 			body:      body,
 			timestamp: time.Now(),
@@ -82,11 +82,11 @@ func NewPublicMsg(body string, from *User) *PublicMsg {
 	}
 }
 
-func (m *PublicMsg) From() *User {
+func (m PublicMsg) From() *User {
 	return m.from
 }
 
-func (m *PublicMsg) ParseCommand() (*CommandMsg, bool) {
+func (m PublicMsg) ParseCommand() (*CommandMsg, bool) {
 	// Check if the message is a command
 	if !strings.HasPrefix(m.body, "/") {
 		return nil, false
@@ -104,7 +104,7 @@ func (m *PublicMsg) ParseCommand() (*CommandMsg, bool) {
 	return &msg, true
 }
 
-func (m *PublicMsg) Render(t *Theme) string {
+func (m PublicMsg) Render(t *Theme) string {
 	if t == nil {
 		return m.String()
 	}
@@ -112,7 +112,7 @@ func (m *PublicMsg) Render(t *Theme) string {
 	return fmt.Sprintf("%s: %s", t.ColorName(m.from), m.body)
 }
 
-func (m *PublicMsg) RenderFor(cfg UserConfig) string {
+func (m PublicMsg) RenderFor(cfg UserConfig) string {
 	if cfg.Highlight == nil || cfg.Theme == nil {
 		return m.Render(cfg.Theme)
 	}
@@ -128,7 +128,7 @@ func (m *PublicMsg) RenderFor(cfg UserConfig) string {
 	return fmt.Sprintf("%s: %s", cfg.Theme.ColorName(m.from), body)
 }
 
-func (m *PublicMsg) String() string {
+func (m PublicMsg) String() string {
 	return fmt.Sprintf("%s: %s", m.from.Name(), m.body)
 }
 
@@ -150,11 +150,11 @@ func NewEmoteMsg(body string, from *User) *EmoteMsg {
 	}
 }
 
-func (m *EmoteMsg) Render(t *Theme) string {
+func (m EmoteMsg) Render(t *Theme) string {
 	return fmt.Sprintf("** %s %s", m.from.Name(), m.body)
 }
 
-func (m *EmoteMsg) String() string {
+func (m EmoteMsg) String() string {
 	return m.Render(nil)
 }
 
@@ -164,22 +164,26 @@ type PrivateMsg struct {
 	to *User
 }
 
-func NewPrivateMsg(body string, from *User, to *User) *PrivateMsg {
-	return &PrivateMsg{
-		PublicMsg: *NewPublicMsg(body, from),
+func NewPrivateMsg(body string, from *User, to *User) PrivateMsg {
+	return PrivateMsg{
+		PublicMsg: NewPublicMsg(body, from),
 		to:        to,
 	}
 }
 
-func (m *PrivateMsg) To() *User {
+func (m PrivateMsg) To() *User {
 	return m.to
 }
 
-func (m *PrivateMsg) Render(t *Theme) string {
-	return fmt.Sprintf("[PM from %s] %s", m.from.Name(), m.body)
+func (m PrivateMsg) Render(t *Theme) string {
+	s := fmt.Sprintf("[PM from %s] %s", m.from.Name(), m.body)
+	if t == nil {
+		return s
+	}
+	return t.ColorPM(s)
 }
 
-func (m *PrivateMsg) String() string {
+func (m PrivateMsg) String() string {
 	return m.Render(nil)
 }
 
@@ -230,31 +234,31 @@ func NewAnnounceMsg(body string) *AnnounceMsg {
 	}
 }
 
-func (m *AnnounceMsg) Render(t *Theme) string {
+func (m AnnounceMsg) Render(t *Theme) string {
 	if t == nil {
 		return m.String()
 	}
 	return t.ColorSys(m.String())
 }
 
-func (m *AnnounceMsg) String() string {
+func (m AnnounceMsg) String() string {
 	return fmt.Sprintf(" * %s", m.body)
 }
 
 type CommandMsg struct {
-	*PublicMsg
+	PublicMsg
 	command string
 	args    []string
 }
 
-func (m *CommandMsg) Command() string {
+func (m CommandMsg) Command() string {
 	return m.command
 }
 
-func (m *CommandMsg) Args() []string {
+func (m CommandMsg) Args() []string {
 	return m.args
 }
 
-func (m *CommandMsg) Body() string {
+func (m CommandMsg) Body() string {
 	return m.body
 }

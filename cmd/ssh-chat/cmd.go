@@ -22,9 +22,13 @@ import (
 )
 import _ "net/http/pprof"
 
+// Version of the binary, assigned during build.
+var Version string = "dev"
+
 // Options contains the flag options
 type Options struct {
 	Verbose   []bool `short:"v" long:"verbose" description:"Show verbose logging."`
+	Version   bool   `long:"version" description:"Print version and exit."`
 	Identity  string `short:"i" long:"identity" description:"Private key to identify server with." default:"~/.ssh/id_rsa"`
 	Bind      string `long:"bind" description:"Host and port to listen on." default:"0.0.0.0:2022"`
 	Admin     string `long:"admin" description:"File of public keys who are admins."`
@@ -63,6 +67,11 @@ func main() {
 		}()
 	}
 
+	if options.Version {
+		fmt.Println(Version)
+		os.Exit(0)
+	}
+
 	// Figure out the log level
 	numVerbose := len(options.Verbose)
 	if numVerbose > len(logLevels) {
@@ -76,6 +85,7 @@ func main() {
 		// Enable logging from submodules
 		chat.SetLogger(os.Stderr)
 		sshd.SetLogger(os.Stderr)
+		message.SetLogger(os.Stderr)
 	}
 
 	privateKeyPath := options.Identity
@@ -111,6 +121,7 @@ func main() {
 
 	host := sshchat.NewHost(s, auth)
 	host.SetTheme(message.Themes[0])
+	host.Version = Version
 
 	err = fromFile(options.Admin, func(line []byte) error {
 		key, _, _, _, err := ssh.ParseAuthorizedKey(line)
@@ -141,7 +152,7 @@ func main() {
 		if err != nil {
 			fail(7, "Failed to load MOTD file: %v\n", err)
 		}
-		motdString := strings.TrimSpace(string(motd))
+		motdString := string(motd)
 		// hack to normalize line endings into \r\n
 		motdString = strings.Replace(motdString, "\r\n", "\n", -1)
 		motdString = strings.Replace(motdString, "\n", "\r\n", -1)
